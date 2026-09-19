@@ -1,0 +1,50 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Spoofer.exe
+        shell: powershell
+        run: .\build_exe.ps1
+
+      - name: Prepare release files
+        shell: powershell
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $hash = (Get-FileHash .\Spoofer.exe -Algorithm SHA256).Hash.ToLower()
+          $manifest = @{
+            version = $version
+            download_url = "https://github.com/${{ github.repository }}/releases/latest/download/Spoofer.exe"
+            sha256 = $hash
+            notes = "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          } | ConvertTo-Json
+          Set-Content -Path .\update-manifest.json -Value $manifest -Encoding utf8
+          Copy-Item .\README.txt .\release-README.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Spoofer ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            Spoofer.exe
+            update-manifest.json
+            release-README.txt
+            Maiks_Spoofer_Plugin.lua

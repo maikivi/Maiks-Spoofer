@@ -1,0 +1,6 @@
+{
+  "version": "2.2.0",
+  "download_url": "https://your-domain.example/Spoofer.exe",
+  "sha256": "replace-with-the-64-character-sha256-hash",
+  "notes": "Example release notes"
+}

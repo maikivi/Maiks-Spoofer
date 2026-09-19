@@ -1,0 +1,10 @@
+config.json
+spoofer.log
+build/
+dist/
+__pycache__/
+*.pyc
+Spoofer.exe
+Spoofer.spec
+build-output.log
+build-error.log
