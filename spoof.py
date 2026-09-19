@@ -13,6 +13,7 @@ import re
 import socket
 import subprocess
 import tempfile
+from logging.handlers import RotatingFileHandler
 from flask import Flask, request, jsonify
 import requests
 from colorama import init, Fore, Style
@@ -26,8 +27,8 @@ BASE_DIR = (
 )
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 LOG_FILE = os.path.join(BASE_DIR, "spoofer.log")
-APP_VERSION = "2.1.0"
-UPDATE_MANIFEST_URL = os.environ.get("SPOOFER_UPDATE_URL", "")
+APP_VERSION = "2.2.0"
+UPDATE_MANIFEST_URL = os.environ.get("SPOOFER_UPDATE_URL", "https://github.com/maikivi/Maiks-Spoofer/releases/latest/download/update-manifest.json")
 DEFAULT_PORT = 5555
 MAX_WORKERS = 6
 MAX_ANIMATIONS = 500
@@ -36,13 +37,46 @@ DOWNLOAD_TIMEOUT = (5, 30)
 UPLOAD_TIMEOUT = (5, 60)
 OPERATION_TIMEOUT = 120
 RETRY_LIMIT = 3
+CONFIG_SECRET_KEY = os.environ.get("SPOOFER_SECRET_KEY", "MaikSpooferLocalGuard2026")
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+
+def xor_cipher(value, key):
+    if value is None:
+        return ""
+    value = str(value)
+    key_bytes = (key or "").encode('utf-8')
+    value_bytes = value.encode('utf-8')
+    result = bytearray()
+    for i, byte in enumerate(value_bytes):
+        key_byte = key_bytes[i % len(key_bytes)]
+        result.append(byte ^ key_byte)
+    return result.hex()
+
+
+def xor_decipher(value, key):
+    if not value:
+        return ""
+    try:
+        raw = bytes.fromhex(str(value))
+    except ValueError:
+        return str(value)
+    key_bytes = (key or "").encode('utf-8')
+    output = bytearray()
+    for i, byte in enumerate(raw):
+        key_byte = key_bytes[i % len(key_bytes)]
+        output.append(byte ^ key_byte)
+    return output.decode('utf-8', errors='strict')
+
+
 logger = logging.getLogger("maiks_spoofer")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = RotatingFileHandler(LOG_FILE, maxBytes=1_048_576, backupCount=3, encoding='utf-8')
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+
 
 class Config:
     def __init__(self):
@@ -52,35 +86,42 @@ class Config:
         self.port = DEFAULT_PORT
         self.update_manifest_url = UPDATE_MANIFEST_URL
         self.load()
-    
+
+    def _read_value(self, data, key, default=""):
+        value = data.get(key, default)
+        if isinstance(value, str) and value.startswith("enc:"):
+            value = xor_decipher(value[4:], CONFIG_SECRET_KEY)
+        return value
+
     def load(self):
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.cookie = data.get('cookie', '')
-                    self.api_key = data.get('api_key', '')
-                    self.user_id = data.get('user_id', '')
-                    self.update_manifest_url = data.get('update_manifest_url', UPDATE_MANIFEST_URL)
+                    self.cookie = self._read_value(data, 'cookie', '')
+                    self.api_key = self._read_value(data, 'api_key', '')
+                    self.user_id = self._read_value(data, 'user_id', '')
+                    self.update_manifest_url = self._read_value(data, 'update_manifest_url', UPDATE_MANIFEST_URL)
                     port = data.get('port', DEFAULT_PORT)
                     self.port = port if isinstance(port, int) and 1 <= port <= 65535 else DEFAULT_PORT
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
                 logger.warning("Could not load configuration: %s", error)
-    
+
     def save(self):
         temporary_path = None
         try:
+            payload = {
+                'cookie': f"enc:{xor_cipher(self.cookie, CONFIG_SECRET_KEY)}",
+                'api_key': f"enc:{xor_cipher(self.api_key, CONFIG_SECRET_KEY)}",
+                'user_id': f"enc:{xor_cipher(self.user_id, CONFIG_SECRET_KEY)}",
+                'port': self.port,
+                'update_manifest_url': self.update_manifest_url
+            }
             with tempfile.NamedTemporaryFile(
                 mode='w', encoding='utf-8', dir=BASE_DIR,
                 prefix='config.', suffix='.tmp', delete=False
             ) as f:
-                json.dump({
-                    'cookie': self.cookie,
-                    'api_key': self.api_key,
-                    'user_id': self.user_id,
-                    'port': self.port,
-                    'update_manifest_url': self.update_manifest_url
-                }, f, indent=2)
+                json.dump(payload, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
                 temporary_path = f.name
@@ -89,9 +130,23 @@ class Config:
             logger.error("Could not save configuration: %s", error)
             if temporary_path and os.path.exists(temporary_path):
                 os.remove(temporary_path)
-    
+
     def is_first_run(self):
         return not os.path.exists(CONFIG_FILE) or (not self.cookie and not self.api_key)
+
+    def validate(self):
+        issues = []
+        if not self.cookie or len(self.cookie) < 10:
+            issues.append("Cookie is missing or incomplete")
+        if not self.api_key or len(self.api_key) < 10:
+            issues.append("API key is missing or incomplete")
+        if not self.user_id or not self.user_id.isdigit():
+            issues.append("User ID is missing or invalid")
+        if not 1 <= self.port <= 65535:
+            issues.append("Port is invalid")
+        if self.update_manifest_url and not self.update_manifest_url.lower().startswith("https://"):
+            issues.append("Update URL must use HTTPS")
+        return issues
 
 config = Config()
 app = Flask(__name__)
@@ -228,7 +283,9 @@ def install_update(update):
 
 def check_for_updates():
     update = update_manifest()
-    if not update or version_key(update["version"]) <= version_key(APP_VERSION):
+    if not update:
+        return False
+    if version_key(update["version"]) <= version_key(APP_VERSION):
         return False
     print(f"\nUpdate available: {APP_VERSION} -> {update['version']}")
     if update["notes"]:
@@ -237,6 +294,16 @@ def check_for_updates():
     if choice not in ("y", "yes"):
         return False
     return install_update(update)
+
+
+def validate_runtime_state():
+    issues = config.validate()
+    if not issues:
+        return True
+    print(f"\n{Fore.YELLOW}[!] Runtime validation warnings:{Style.RESET_ALL}")
+    for issue in issues:
+        print(f"  - {issue}")
+    return False
 
 def first_time_setup():
     print(f"\n{Fore.CYAN}=== MAIK'S SPOOFER SETUP ==={Style.RESET_ALL}\n")
@@ -264,18 +331,28 @@ def first_time_setup():
     print(f"\n{Fore.GREEN}[+] Setup complete!{Style.RESET_ALL}")
     input(f"\n{Fore.CYAN}Press Enter to continue...{Style.RESET_ALL}")
 
+def is_valid_animation_payload(data):
+    if not isinstance(data, (bytes, bytearray)):
+        return False
+    if len(data) < 100 or len(data) > MAX_ANIMATION_BYTES:
+        return False
+    if b"<?xml" not in data and b"rbxm" not in data and b"roblox" not in data:
+        return False
+    return True
+
+
 def download_animation(anim_id):
     cookie = config.cookie
     headers = {
         'User-Agent': 'Roblox/WinInet',
         'Cookie': f'.ROBLOSECURITY={cookie}'
     }
-    
+
     response = get_with_retry(
         f"https://assetdelivery.roblox.com/v1/asset/?id={anim_id}",
         headers=headers, timeout=DOWNLOAD_TIMEOUT
     )
-    if response is not None and response.status_code == 200 and len(response.content) > 100:
+    if response is not None and response.status_code == 200 and is_valid_animation_payload(response.content):
         return response.content
 
     response = get_with_retry(
@@ -287,11 +364,10 @@ def download_animation(anim_id):
         if location:
             asset_response = get_with_retry(location, timeout=DOWNLOAD_TIMEOUT)
             if asset_response is not None and asset_response.status_code == 200:
-                if 100 < len(asset_response.content) <= MAX_ANIMATION_BYTES:
+                if is_valid_animation_payload(asset_response.content):
                     return asset_response.content
 
     logger.info("Could not download animation %s", anim_id)
-    
     return None
 
 def test_api_key():
@@ -522,9 +598,11 @@ def run_flask():
 
 def start_server():
     global server_thread, server_running
-    if server_running:
+    if server_thread is not None and server_thread.is_alive():
         print(f"{Fore.YELLOW}[!] Already running!{Style.RESET_ALL}")
         return
+    if server_running and server_thread is not None and not server_thread.is_alive():
+        server_running = False
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -940,6 +1018,8 @@ if __name__ == "__main__":
     try:
         if config.is_first_run():
             first_time_setup()
+        if not validate_runtime_state():
+            print(f"\n{Fore.YELLOW}[*] Launching with warnings. Check settings before use.{Style.RESET_ALL}")
         check_for_updates()
         main_menu()
     except KeyboardInterrupt:
