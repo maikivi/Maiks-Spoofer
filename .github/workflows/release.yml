@@ -36,13 +36,13 @@ jobs:
             notes = "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
           } | ConvertTo-Json
           Set-Content -Path .\update-manifest.json -Value $manifest -Encoding utf8
-          Copy-Item .\README.txt .\release-README.txt
+          Copy-Item .\README.md .\release-README.txt
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           name: Spoofer ${{ github.ref_name }}
-          body_path: RELEASE_NOTES.md
+          body_path: .github/release-notes.md
           files: |
             Spoofer.exe
             update-manifest.json

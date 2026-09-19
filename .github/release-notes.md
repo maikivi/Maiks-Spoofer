@@ -13,7 +13,7 @@
 ## Installation
 
 Keep `Spoofer.exe`, `config.json`, and `Maiks_Spoofer_Plugin.lua` available on
-the same machine. See `README.txt` for setup instructions.
+the same machine. See `README.md` for setup instructions.
 
 ## Security
 

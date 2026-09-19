@@ -13,6 +13,20 @@ LOCAL USE
 The service is local-only and listens on localhost. Do not expose its port to
 the internet.
 
+PROJECT STRUCTURE
+-----------------
+This folder is kept lean for a clean local setup:
+
+- Spoofer.exe - packaged desktop app
+- spoof.py - backend service and updater logic
+- config.json - local credentials and settings
+- Maiks_Spoofer_Plugin.lua - Roblox Studio connector
+- build_exe.ps1 - one-click Windows build script
+- README.md - user setup guide
+- .github - GitHub workflow and release metadata
+
+No extra build logs or temporary text files are kept in the root folder.
+
 UPDATES
 -------
 The app can check a GitHub Release manifest before opening the main menu.
